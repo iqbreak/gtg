@@ -1,4 +1,4 @@
-name: Update MTProto proxies
+name: Update encrypted MTProto proxies
 
 on:
   workflow_dispatch:
@@ -6,7 +6,7 @@ on:
     paths:
       - ".github/workflows/update-proxies.yml"
   schedule:
-    - cron: "17 */6 * * *"
+    - cron: "17 3 * * *"
 
 permissions:
   contents: write
@@ -18,17 +18,37 @@ concurrency:
 jobs:
   update:
     runs-on: ubuntu-latest
+    env:
+      PROXY_PASSWORD: ${{ secrets.PROXY_PASSWORD }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Fetch and parse public proxy channel
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install encryption dependency
+        run: python -m pip install --disable-pip-version-check cryptography==46.0.0
+
+      - name: Fetch, parse and encrypt public proxy channel
         shell: python
         run: |
+          import base64
           import datetime
           import json
+          import os
           import re
+          import secrets
           import urllib.request
+          from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+          from cryptography.hazmat.primitives import hashes
+          from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+
+          password = os.environ.get("PROXY_PASSWORD", "")
+          if len(password) < 16:
+              raise RuntimeError("Set the PROXY_PASSWORD Actions secret (at least 16 characters)")
 
           source = "https://r.jina.ai/https://t.me/s/ProxyMTProto"
           request = urllib.request.Request(source, headers={"User-Agent": "Mozilla/5.0"})
@@ -65,22 +85,36 @@ jobs:
               proxies.append({"server": server, "port": port, "secret": secret})
 
           if not proxies:
-              raise RuntimeError("No valid proxies found; keeping the previous list")
+              raise RuntimeError("No valid proxies found; keeping the previous encrypted list")
 
-          payload = {
+          plain = json.dumps({
               "updatedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
               "proxies": proxies,
+          }, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+          salt = secrets.token_bytes(16)
+          iv = secrets.token_bytes(12)
+          iterations = 250_000
+          key = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=salt, iterations=iterations).derive(password.encode("utf-8"))
+          ciphertext = AESGCM(key).encrypt(iv, plain, None)
+          encrypted = {
+              "v": 1,
+              "alg": "AES-GCM",
+              "kdf": "PBKDF2-SHA256",
+              "iterations": iterations,
+              "salt": base64.b64encode(salt).decode("ascii"),
+              "iv": base64.b64encode(iv).decode("ascii"),
+              "ciphertext": base64.b64encode(ciphertext).decode("ascii"),
           }
-          with open("proxies.json", "w", encoding="utf-8") as output:
-              json.dump(payload, output, ensure_ascii=False, separators=(",", ":"))
+          with open("proxies.enc.json", "w", encoding="utf-8") as output:
+              json.dump(encrypted, output, separators=(",", ":"))
               output.write("\n")
-          print(f"Saved {len(proxies)} proxies")
+          print(f"Encrypted {len(proxies)} proxies")
 
-      - name: Commit updated list
+      - name: Commit updated encrypted list
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add proxies.json
+          git add proxies.enc.json
           git diff --cached --quiet && exit 0
-          git commit -m "Update proxy list"
+          git commit -m "Update encrypted proxy list"
           git push
