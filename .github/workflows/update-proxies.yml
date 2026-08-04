@@ -1,0 +1,86 @@
+name: Update MTProto proxies
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/update-proxies.yml"
+  schedule:
+    - cron: "*/10 * * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-mtproto-proxies
+  cancel-in-progress: true
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Fetch and parse public proxy channel
+        shell: python
+        run: |
+          import datetime
+          import json
+          import re
+          import urllib.request
+
+          source = "https://r.jina.ai/https://t.me/s/ProxyMTProto"
+          request = urllib.request.Request(source, headers={"User-Agent": "Mozilla/5.0"})
+          with urllib.request.urlopen(request, timeout=60) as response:
+              text = response.read().decode("utf-8", errors="replace")
+
+          lines = text.splitlines()
+          proxies = []
+          seen = set()
+          server_re = re.compile(r"^\s*Server:\s*`?([^`\s]+)`?\s*$", re.I)
+          port_re = re.compile(r"^\s*Port:\s*`?(\d{1,5})`?\s*$", re.I | re.M)
+          secret_re = re.compile(r"^\s*Secret:\s*`?([^`\s]+)`?\s*$", re.I | re.M)
+          valid_server = re.compile(r"^(?:[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?|\d{1,3}(?:\.\d{1,3}){3})$", re.I)
+          valid_secret = re.compile(r"^[a-z0-9_=-]{8,512}$", re.I)
+
+          for index, line in enumerate(lines):
+              server_match = server_re.match(line)
+              if not server_match:
+                  continue
+              server = server_match.group(1).rstrip(".").strip()
+              nearby = "\n".join(lines[index + 1:index + 9])
+              port_match = port_re.search(nearby)
+              secret_match = secret_re.search(nearby)
+              if not port_match or not secret_match or server.lower() == "unknown":
+                  continue
+              port = int(port_match.group(1))
+              secret = secret_match.group(1)
+              if not valid_server.fullmatch(server) or not valid_secret.fullmatch(secret) or not 1 <= port <= 65535:
+                  continue
+              identity = f"{server}:{port}:{secret}"
+              if identity in seen:
+                  continue
+              seen.add(identity)
+              proxies.append({"server": server, "port": port, "secret": secret})
+
+          if not proxies:
+              raise RuntimeError("No valid proxies found; keeping the previous list")
+
+          payload = {
+              "updatedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+              "proxies": proxies,
+          }
+          with open("proxies.json", "w", encoding="utf-8") as output:
+              json.dump(payload, output, ensure_ascii=False, separators=(",", ":"))
+              output.write("\n")
+          print(f"Saved {len(proxies)} proxies")
+
+      - name: Commit updated list
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add proxies.json
+          git diff --cached --quiet && exit 0
+          git commit -m "Update proxy list"
+          git push
