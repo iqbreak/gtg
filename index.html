@@ -30,7 +30,6 @@
     <footer>Источник: публичный канал. Пупу принадлежат сторонним владельцам.</footer>
   </main>
   <script>
-    const SOURCE='https://r.jina.ai/https://t.me/s/ProxyMTProto';
     const STORAGE='mtproto-hidden-proxies-v1';
     let proxies=[];
     let hidden=loadHidden();
@@ -39,16 +38,13 @@
     function saveHidden(){localStorage.setItem(STORAGE,JSON.stringify(hidden))}
     function validServer(v){return /^(?:[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?|\d{1,3}(?:\.\d{1,3}){3})$/i.test(v)}
     function validSecret(v){return /^[a-z0-9_=-]{8,512}$/i.test(v)}
-    function parse(text){
-      const lines=text.split(/\r?\n/),found=[],seen=new Set();
-      for(let i=0;i<lines.length;i++){
-        const sm=lines[i].match(/^\s*Server:\s*`?([^`\s]+)`?\s*$/i);if(!sm)continue;
-        const server=sm[1].replace(/\.$/,'').trim();
-        const near=lines.slice(i+1,i+9).join('\n');
-        const pm=near.match(/^\s*Port:\s*`?(\d{1,5})`?\s*$/im);
-        const km=near.match(/^\s*Secret:\s*`?([^`\s]+)`?\s*$/im);
-        if(!pm||!km||server.toLowerCase()==='unknown'||!validServer(server)||!validSecret(km[1]))continue;
-        const port=Number(pm[1]),secret=km[1];if(port<1||port>65535)continue;
+    function sanitizeProxies(items){
+      if(!Array.isArray(items))return[];
+      const found=[],seen=new Set();
+      for(const item of items){
+        const server=String(item?.server||'').replace(/\.$/,'').trim();
+        const port=Number(item?.port),secret=String(item?.secret||'');
+        if(!validServer(server)||!validSecret(secret)||port<1||port>65535)continue;
         const id=`${server}:${port}:${secret}`;if(seen.has(id))continue;seen.add(id);
         found.push({id,server,port,secret});
       }
@@ -71,10 +67,11 @@
       const button=document.getElementById('refresh'),dot=document.getElementById('dot'),status=document.getElementById('status');
       button.disabled=true;dot.className='dot loading';status.textContent='Получаю свежие пупу…';
       try{
-        const bucket=Math.floor(Date.now()/300000);
-        const response=await fetch(`${SOURCE}?refresh=${bucket}`,{cache:'no-store'});if(!response.ok)throw Error(response.status);
-        proxies=parse(await response.text());if(!proxies.length)throw Error('empty');
-        const time=new Intl.DateTimeFormat('ru-RU',{hour:'2-digit',minute:'2-digit',timeZone:'Europe/Moscow'}).format(new Date());
+        const response=await fetch(`./proxies.json?refresh=${Date.now()}`,{cache:'no-store'});if(!response.ok)throw Error(response.status);
+        const payload=await response.json();
+        proxies=sanitizeProxies(payload.proxies);if(!proxies.length)throw Error('empty');
+        const sourceDate=payload.updatedAt?new Date(payload.updatedAt):new Date();
+        const time=new Intl.DateTimeFormat('ru-RU',{hour:'2-digit',minute:'2-digit',timeZone:'Europe/Moscow'}).format(sourceDate);
         dot.className='dot';status.textContent=`Обновлено в ${time} МСК`;render();
       }catch(e){dot.className='dot error';status.textContent='Источник временно недоступен';showError()}finally{button.disabled=false}
     }
